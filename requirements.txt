@@ -2,4 +2,3 @@ streamlit
 openai
 pypdf
 python-dotenv
-[[1](https://www.google.com/url?sa=E&q=https%3A%2F%2Fvertexaisearch.cloud.google.com%2Fgrounding-api-redirect%2FAUZIYQFD9dGLOSs78O-O7fE8QAhL6_hrOMcmKDoyQbaJAME8wUfOpanFK-lCjni5vIMRXROZopMF5Nf6iA9Gz_d9s6-lh0MQHpMBxTRug9kbEkXtBJpOpPfcm7hdJSKc_0A2k0FConGxLx4pJjgv_kuGfDX3Fg%3D%3D)]
