@@ -169,7 +169,7 @@ if st.button("🚀 Analyze & Optimize"):
             pdf.add_page()
             try:
                 pdf.write_html(safe_html)
-                st.session_state.pdf_data = pdf.output(dest='S')
+                st.session_state.pdf_data = bytes(pdf.output(dest='S'))
             except Exception as e:
                 st.error(f"PDF formatting error: {e}")
                 st.stop()
