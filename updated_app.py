@@ -2,133 +2,166 @@ import streamlit as st
 import json
 from openai import OpenAI
 from pypdf import PdfReader
+from fpdf import FPDF
+import base64
 
-# 1. Page Configuration
-st.set_page_config(page_title="Smart Resume Analyzer", page_icon="🎯", layout="wide")
+# 1. Page Config
+st.set_page_config(page_title="AI Resume Optimizer", page_icon="🚀", layout="wide")
 
-# 2. API Key Setup
+# 2. API Key
 api_key = st.secrets.get("OPENAI_API_KEY")
+if not api_key:
+    st.error("API Key missing!")
+    st.stop()
 
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    if api_key:
-        st.success("API Connected ✅")
-    else:
-        st.error("API Key missing! Check Streamlit Secrets.")
-        st.stop()
+client = OpenAI(api_key=api_key)
+
+# --- HELPER FUNCTIONS ---
+
+def get_analysis(resume_txt, jd_txt):
+    """
+    Analyzes the fit between resume and JD.
+    Returns a JSON object with score and feedback.
+    """
+    prompt = f"""
+    Act as an expert ATS. Compare the RESUME vs JOB DESCRIPTION.
+    Return strictly JSON:
+    {{
+        "match_percentage": Integer (0-100),
+        "missing_keywords": List[String],
+        "summary": String
+    }}
     
-    st.info("This tool compares a Resume against a Job Description to verify fit.")
+    JOB DESCRIPTION: {jd_txt}
+    RESUME: {resume_txt}
+    """
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"}
+    )
+    return json.loads(response.choices[0].message.content)
 
-# 3. Main Interface
-st.title("🎯 AI Resume & Job Fit Analyzer")
-st.markdown("Paste a **Job Description** and upload a **Resume** to see the match score and get improvement tips.")
+def generate_improved_content(resume_txt, jd_txt):
+    """
+    Rewrites the resume to include keywords and fit the JD.
+    """
+    prompt = f"""
+    You are a professional Resume Writer. 
+    Rewrite the provided RESUME to target the JOB DESCRIPTION.
+    
+    Rules:
+    1. Keep the candidate's real truth (don't lie), but emphasize relevant skills.
+    2. Naturally include missing keywords from the JD.
+    3. Use professional, clear language.
+    4. Structure it clearly (Summary, Skills, Experience, Education).
+    5. Return ONLY the body text of the new resume. Do not include Markdown or JSON. Just plain text.
+    
+    JOB DESCRIPTION: {jd_txt}
+    RESUME: {resume_txt}
+    """
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response.choices[0].message.content
 
-# Layout: Split screen for inputs
+def create_pdf(text):
+    """
+    Converts plain text to a simple PDF file.
+    """
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("Arial", size=11)
+    
+    # FPDF has trouble with some unicode characters, so we sanitize a bit
+    # 'latin-1' encoding allows basic English text.
+    safe_text = text.encode('latin-1', 'ignore').decode('latin-1')
+    
+    pdf.multi_cell(0, 10, safe_text)
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- MAIN UI ---
+
+st.title("🚀 AI Resume Optimizer")
+st.markdown("Upload your resume and a job description. We will **Analyze it**, **Rewrite it**, and **Rescore it**.")
+
 col1, col2 = st.columns(2)
-
 with col1:
-    st.subheader("1️⃣ The Job")
-    # Text Area for Job Description
-    jd_text = st.text_area("Paste Job Description (JD) here:", height=200)
-
+    jd_input = st.text_area("Paste Job Description", height=200)
 with col2:
-    st.subheader("2️⃣ The Resume")
-    # File Uploader
     uploaded_file = st.file_uploader("Upload Resume (PDF)", type="pdf")
 
-# 4. Logic: Only run if both inputs are present
-if st.button("Analyze Match"):
-    if not jd_text:
-        st.warning("⚠️ Please paste a Job Description first.")
-    elif not uploaded_file:
-        st.warning("⚠️ Please upload a Resume PDF.")
+if st.button("Optimize Resume"):
+    if not jd_input or not uploaded_file:
+        st.warning("Please provide both a Job Description and a Resume.")
     else:
-        # Extract Text from PDF
-        with st.spinner("Reading Resume..."):
-            try:
-                reader = PdfReader(uploaded_file)
-                resume_text = ""
-                for page in reader.pages:
-                    resume_text += page.extract_text() + "\n"
-            except Exception as e:
-                st.error(f"Error reading PDF: {e}")
-                st.stop()
+        # 1. Read Original PDF
+        with st.spinner("Reading original resume..."):
+            reader = PdfReader(uploaded_file)
+            original_text = ""
+            for page in reader.pages:
+                original_text += page.extract_text() + "\n"
 
-        # AI Analysis
-        with st.spinner("Comparing Resume to Job Description..."):
-            client = OpenAI(api_key=api_key)
+        # 2. Analyze Original Fit
+        with st.spinner("Analyzing current fit..."):
+            original_analysis = get_analysis(original_text, jd_input)
+
+        # 3. Generate NEW Resume Content
+        with st.spinner("Generating optimized resume version..."):
+            improved_text = generate_improved_content(original_text, jd_input)
+
+        # 4. Analyze NEW Fit
+        with st.spinner("Checking score of new version..."):
+            new_analysis = get_analysis(improved_text, jd_input)
+
+        # 5. Create PDF
+        pdf_data = create_pdf(improved_text)
+
+        # --- DISPLAY RESULTS ---
+        st.divider()
+        st.subheader("📊 Optimization Results")
+
+        # Score Comparison
+        col_a, col_b, col_c = st.columns(3)
+        
+        with col_a:
+            st.metric("Original Score", f"{original_analysis['match_percentage']}%")
+        
+        with col_b:
+            st.metric("Optimized Score", f"{new_analysis['match_percentage']}%")
+        
+        with col_c:
+            improvement = new_analysis['match_percentage'] - original_analysis['match_percentage']
+            st.metric("Improvement", f"+{improvement}%")
             
-            # The Prompt: This is the 'brain' that compares the two texts
-            prompt = f"""
-            Act as an expert ATS (Applicant Tracking System) and Career Coach.
-            
-            I will provide a JOB DESCRIPTION and a RESUME. 
-            Compare them and return a JSON object with the following fields:
+        # Visual Progress
+        st.write("Match Improvement:")
+        st.progress(new_analysis['match_percentage'] / 100)
 
-            1. "match_percentage": Integer (0-100)
-            2. "key_missing_skills": List of strings (Skills in JD but missing in Resume)
-            3. "recommended_changes": List of strings (Specific advice to improve the resume for THIS job)
-            4. "summary_of_fit": String (Brief explanation of why they fit or don't fit)
-
-            JOB DESCRIPTION:
-            {jd_text}
-
-            RESUME TEXT:
-            {resume_text}
-            """
-
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a JSON extractor and career coach."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format={"type": "json_object"}
-                )
-                
-                # Parse JSON
-                data = json.loads(response.choices[0].message.content)
-
-                # 5. Display Results
-                st.divider()
-                st.subheader("📊 Analysis Results")
-
-                # Match Score Visual
-                score = data.get('match_percentage', 0)
-                
-                # Create a progress bar with color logic
-                st.metric("Match Score", f"{score}%")
-                st.progress(score / 100)
-                
-                if score >= 80:
-                    st.success("🎉 Great Match!")
-                elif score >= 50:
-                    st.warning("⚖️ Average Match - Needs Tweaking")
-                else:
-                    st.error("🛑 Low Match - Major Changes Needed")
-
-                # Columns for details
-                c1, c2 = st.columns(2)
-                
-                with c1:
-                    st.write("### ❌ Missing Skills")
-                    missing = data.get('key_missing_skills', [])
-                    if missing:
-                        for skill in missing:
-                            st.write(f"- 🔴 {skill}")
-                    else:
-                        st.write("✅ No critical skills missing!")
-
-                with c2:
-                    st.write("### 💡 Recommendations")
-                    recs = data.get('recommended_changes', [])
-                    for rec in recs:
-                        st.write(f"- 🔧 {rec}")
-
-                # Summary
-                st.write("### 📝 Verdict")
-                st.info(data.get('summary_of_fit'))
-
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
+        # Feedback
+        st.write("### 🔍 What Changed?")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.info(f"**Before:** {original_analysis['summary']}")
+            st.write("**Missing Keywords (Fixed):**")
+            st.write(", ".join(original_analysis['missing_keywords']))
+        with c2:
+            st.success(f"**After:** {new_analysis['summary']}")
+        
+        # Download Button
+        st.divider()
+        st.subheader("📥 Download Your New Resume")
+        st.markdown("This version is text-based and optimized for ATS reading.")
+        
+        st.download_button(
+            label="Download Optimized Resume (PDF)",
+            data=pdf_data,
+            file_name="Optimized_Resume.pdf",
+            mime="application/pdf"
+        )
+        
+        # Show text preview
+        with st.expander("Preview New Resume Text"):
+            st.text(improved_text)
