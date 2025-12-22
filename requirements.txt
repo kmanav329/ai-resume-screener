@@ -4,3 +4,4 @@ pypdf
 python-dotenv
 scikit-learn
 pandas
+fpdf
