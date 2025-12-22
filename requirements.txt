@@ -5,4 +5,3 @@ python-dotenv
 scikit-learn
 pandas
 fpdf2
-xhtml2pdf
