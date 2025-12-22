@@ -44,7 +44,7 @@ def get_analysis(resume_txt, jd_txt):
 
 def generate_improved_content(resume_txt, jd_txt):
     """
-    Rewrites the resume to include keywords and fit the JD.
+    Uses the EXPENSIVE model only for the writing part to get better results.
     """
     prompt = f"""
     You are a professional Resume Writer. 
@@ -61,7 +61,7 @@ def generate_improved_content(resume_txt, jd_txt):
     RESUME: {resume_txt}
     """
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content
