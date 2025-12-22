@@ -22,12 +22,29 @@ class PDF(FPDF, HTMLMixin):
         self.cell(0, 10, "Salesforce Career Architect | AI Optimized", align="R")
         self.ln(15)
 
-# --- AI LOGIC ---
+# --- HELPER FUNCTIONS ---
+
+def sanitize_text(text):
+    """
+    Replaces incompatible smart quotes/dashes with safe ASCII characters
+    to prevent PDF generation errors.
+    """
+    replacements = {
+        "–": "-",   # En-dash to hyphen
+        "—": "-",   # Em-dash to hyphen
+        "“": '"',   # Smart quote open
+        "”": '"',   # Smart quote close
+        "‘": "'",   # Smart single quote
+        "’": "'",   # Smart single quote
+        "…": "...", # Ellipsis
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    
+    # Ensure encoding is handled
+    return text.encode('latin-1', 'replace').decode('latin-1')
 
 def analyze_gap(resume_text, jd_text):
-    """
-    Cheap model (GPT-4o-mini) to find the flaws.
-    """
     prompt = f"""
     You are a Technical Recruiter for Salesforce.
     Compare the RESUME vs JOB DESCRIPTION.
@@ -50,9 +67,6 @@ def analyze_gap(resume_text, jd_text):
     return json.loads(response.choices[0].message.content)
 
 def generate_optimized_resume(resume_text, jd_text, gap_data):
-    """
-    Smart model (GPT-4o) to rewrite the resume.
-    """
     prompt = f"""
     You are a Professional Resume Writer. Rewrite this resume for the specific Job Description.
     
@@ -68,6 +82,7 @@ def generate_optimized_resume(resume_text, jd_text, gap_data):
     - Use <b> for Bold keywords.
     - Use <ul> and <li> for experience bullets.
     - NO <style> or CSS classes.
+    - DO NOT use special characters (like dashes, smart quotes). Use standard keyboard characters.
     
     STRUCTURE:
     <h1 align="center">Candidate Name</h1>
@@ -96,13 +111,9 @@ def generate_optimized_resume(resume_text, jd_text, gap_data):
     return response.choices[0].message.content
 
 def generate_cover_letter(resume_text, jd_text):
-    """
-    Writes a persuasive cover letter.
-    """
     prompt = f"""
     Write a short, punchy Cover Letter for this Salesforce role.
     Focus on why the candidate is a technical fit.
-    Do not use placeholders like [Your Name] - use the data from the resume if possible, or generic placeholders.
     
     RESUME: {resume_text[:3000]}
     JD: {jd_text[:3000]}
@@ -118,21 +129,21 @@ def generate_cover_letter(resume_text, jd_text):
 st.title("☁️ Salesforce Resume Architect")
 st.markdown("Upload your generic resume and a specific JD. We will **Rewrite** it and generate a **Cover Letter**.")
 
-# 1. Inputs
+# Inputs
 col1, col2 = st.columns(2)
 with col1:
     jd_input = st.text_area("Paste Job Description", height=200, placeholder="Paste JD here...")
 with col2:
     uploaded_file = st.file_uploader("Upload Resume (PDF)", type="pdf")
 
-# 2. State Management (Prevents data loss on reload)
+# State Management
 if 'processed' not in st.session_state:
     st.session_state.processed = False
     st.session_state.analysis = None
     st.session_state.pdf_data = None
     st.session_state.cover_letter = None
 
-# 3. Action Button
+# Action
 if st.button("🚀 Analyze & Optimize"):
     if not jd_input or not uploaded_file:
         st.warning("Please provide both inputs!")
@@ -147,16 +158,21 @@ if st.button("🚀 Analyze & Optimize"):
         
         # Step B: Rewrite Resume
         with st.spinner("Rewriting Resume (GPT-4o)..."):
-            html_content = generate_optimized_resume(text, jd_input, st.session_state.analysis)
+            raw_html = generate_optimized_resume(text, jd_input, st.session_state.analysis)
+            
+            # --- THE FIX IS HERE ---
+            safe_html = sanitize_text(raw_html)
+            # -----------------------
             
             # Create PDF
             pdf = PDF()
             pdf.add_page()
             try:
-                pdf.write_html(html_content)
+                pdf.write_html(safe_html)
                 st.session_state.pdf_data = pdf.output(dest='S')
             except Exception as e:
                 st.error(f"PDF formatting error: {e}")
+                st.stop()
                 
         # Step C: Write Cover Letter
         with st.spinner("Drafting Cover Letter..."):
@@ -164,7 +180,7 @@ if st.button("🚀 Analyze & Optimize"):
             
         st.session_state.processed = True
 
-# 4. Display Results
+# Display Results
 if st.session_state.processed:
     st.divider()
     
@@ -178,7 +194,7 @@ if st.session_state.processed:
         if st.session_state.analysis['missing_hard_skills']:
             st.write(f"**Integrated Missing Keywords:** {', '.join(st.session_state.analysis['missing_hard_skills'])}")
 
-    # Tabs for Outputs
+    # Tabs
     tab1, tab2 = st.tabs(["📄 Optimized Resume", "✉️ Cover Letter"])
     
     with tab1:
