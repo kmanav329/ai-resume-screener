@@ -5,3 +5,4 @@ python-dotenv
 scikit-learn
 pandas
 python-docx
+fpdf
