@@ -1,17 +1,34 @@
 import streamlit as st
 import json
-import requests  # <--- NEW LIBRARY
+import requests
+import io
+import os
+from dotenv import load_dotenv
 from openai import OpenAI
 from pypdf import PdfReader
-from fpdf import FPDF
+from docx import Document
+from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-# 1. Page Config
-st.set_page_config(page_title="AI Resume Optimizer", page_icon="🚀", layout="wide")
+# 1. Load Config
+load_dotenv()
+st.set_page_config(page_title="Resume Architect AI", page_icon="📝", layout="wide")
 
-# 2. API Key
+# 2. CSS for Professional Look
+st.markdown("""
+<style>
+    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #2b6cb0; color: white; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
+# 3. API Setup
 api_key = st.secrets.get("OPENAI_API_KEY")
 if not api_key:
-    st.error("API Key missing!")
+    # Fallback for local testing
+    api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("🚨 API Key Missing.")
     st.stop()
 
 client = OpenAI(api_key=api_key)
@@ -20,155 +37,227 @@ client = OpenAI(api_key=api_key)
 
 def fetch_jd_from_url(url):
     """
-    Fetches text from a URL using Jina Reader (LLM-friendly scraper).
+    Fetches text from a URL using Jina Reader.
     """
     try:
-        # Jina Reader turns any website into clean Markdown for AI
         jina_url = f"https://r.jina.ai/{url}"
         response = requests.get(jina_url, timeout=10)
         return response.text
     except Exception as e:
         return None
 
-def get_analysis(resume_txt, jd_txt):
+def create_docx(data):
     """
-    Analyzes the fit between resume and JD using STRICT criteria.
+    Generates a professional Word Doc from the AI JSON data.
+    """
+    doc = Document()
+    
+    # Set default font
+    style = doc.styles['Normal']
+    style.font.name = 'Arial'
+    style.font.size = Pt(10)
+
+    # 1. Header (Name & Contact)
+    h1 = doc.add_paragraph()
+    h1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = h1.add_run(data.get('name', 'Candidate Name'))
+    run.bold = True
+    run.font.size = Pt(24)
+    run.font.color.rgb = RGBColor(0, 51, 102) # Dark Blue
+
+    contact = doc.add_paragraph()
+    contact.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    contact.add_run(data.get('contact_info', 'Location | Email | Phone | LinkedIn'))
+
+    # 2. Professional Summary
+    if data.get('summary'):
+        doc.add_heading('PROFESSIONAL SUMMARY', level=1)
+        doc.add_paragraph(data['summary'])
+
+    # 3. Technical Skills
+    if data.get('skills'):
+        doc.add_heading('TECHNICAL SKILLS', level=1)
+        if isinstance(data['skills'], dict):
+            for category, items in data['skills'].items():
+                p = doc.add_paragraph()
+                p.add_run(f"{category}: ").bold = True
+                p.add_run(items)
+        else:
+            doc.add_paragraph(str(data['skills']))
+
+    # 4. Professional Experience
+    if data.get('experience'):
+        doc.add_heading('PROFESSIONAL EXPERIENCE', level=1)
+        for job in data['experience']:
+            # Role line
+            p = doc.add_paragraph()
+            run_role = p.add_run(f"{job.get('role', 'Role')} | {job.get('company', 'Company')}")
+            run_role.bold = True
+            run_role.font.size = Pt(11)
+            
+            # Dates
+            if job.get('dates'):
+                p.add_run(f"  ({job['dates']})").italic = True
+            
+            # Bullets
+            for bullet in job.get('bullets', []):
+                doc.add_paragraph(bullet, style='List Bullet')
+
+    # 5. Education
+    if data.get('education'):
+        doc.add_heading('EDUCATION', level=1)
+        for edu in data['education']:
+            doc.add_paragraph(f"{edu.get('degree', '')} - {edu.get('school', '')}")
+
+    # Save to memory stream
+    file_stream = io.BytesIO()
+    doc.save(file_stream)
+    file_stream.seek(0)
+    return file_stream
+
+def analyze_fit(resume_text, jd_text):
+    """
+    Strict Analysis with Consistency Locks.
     """
     prompt = f"""
-    Act as a ruthlessly efficient Applicant Tracking System (ATS).
-    Compare the RESUME vs JOB DESCRIPTION.
+    Act as a strict ATS. Compare the RESUME vs JD.
     
     SCORING RULES:
-    - 100%: Perfect match (Hard skills, years of exp, specific tools).
-    - <60%: Missing critical keywords.
-    
-    CRITICAL: Ignore "Soft Skills". Focus ONLY on Hard Skills.
+    - 100%: Perfect match (All hard skills + exact experience).
+    - <60%: Missing critical hard skills.
+    - Ignore Soft Skills. Focus on Tools, Languages, Frameworks.
 
-    Return strictly JSON:
+    Return JSON:
     {{
         "match_percentage": Integer (0-100),
-        "missing_keywords": List[String],
-        "summary": String
+        "missing_keywords": ["List", "of", "missing", "hard", "skills"],
+        "summary_critique": "1 sentence critique."
     }}
     
-    JOB DESCRIPTION: {jd_txt[:5000]}
-    RESUME: {resume_txt[:5000]}
+    JD: {jd_text[:4000]}
+    RESUME: {resume_text[:4000]}
     """
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
+        temperature=0.0, # Lock creativity
+        seed=42,         # Lock randomness
         response_format={"type": "json_object"}
     )
     return json.loads(response.choices[0].message.content)
 
-def generate_improved_content(resume_txt, jd_txt):
+def rewrite_resume_to_json(resume_text, jd_text, gap_data):
     """
-    Rewrites using Google XYZ Formula.
+    Rewrites resume to JSON structure for Word Doc generation.
+    Uses Google XYZ formula.
     """
     prompt = f"""
     You are a Top-Tier Resume Writer. 
-    Rewrite the RESUME to target the JOB DESCRIPTION.
+    Rewrite the RESUME to target the JD, using the 'Google XYZ Formula' for bullet points.
     
-    Use the Google XYZ formula: "Accomplished [X] as measured by [Y], by doing [Z]".
+    Formula: "Accomplished [X] as measured by [Y], by doing [Z]".
     
-    Output Format (Plain Text):
-    PROFESSIONAL SUMMARY
-    [Text]
-    TECHNICAL SKILLS
-    [Text]
-    PROFESSIONAL EXPERIENCE
-    [Role] | [Company] | [Dates]
-    - [XYZ Bullet]
-    EDUCATION
-    [Text]
-    
-    JOB DESCRIPTION: {jd_txt[:5000]}
-    RESUME: {resume_txt[:5000]}
+    INSTRUCTIONS:
+    1. Integrate missing keywords: {gap_data['missing_keywords']}
+    2. Maintain the user's truth but quantify results.
+    3. Return strictly JSON matching the structure below.
+
+    JSON Structure:
+    {{
+        "name": "Candidate Name",
+        "contact_info": "City | Email | Phone",
+        "summary": "Revised Summary",
+        "skills": {{"Category": "List of skills"}},
+        "experience": [
+            {{
+                "role": "Job Title",
+                "company": "Company",
+                "dates": "Date - Date",
+                "bullets": ["XYZ Bullet 1", "XYZ Bullet 2"]
+            }}
+        ],
+        "education": [{{ "degree": "Degree", "school": "University" }}]
+    }}
+
+    JD: {jd_text[:4000]}
+    RESUME: {resume_text[:4000]}
     """
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7
+        temperature=0.0, # Consistent Output
+        seed=42,
+        response_format={"type": "json_object"}
     )
-    return response.choices[0].message.content
-
-def create_pdf(text):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.set_font("Arial", size=11)
-    safe_text = text.encode('latin-1', 'ignore').decode('latin-1')
-    pdf.multi_cell(0, 10, safe_text)
-    return pdf.output(dest='S').encode('latin-1')
+    return json.loads(response.choices[0].message.content)
 
 # --- MAIN UI ---
 
-st.title("🚀 AI Resume Optimizer")
-st.markdown("Upload your resume and provide a Job Description (Text or Link).")
+st.title("🚀 Resume Architect AI")
+st.markdown("Upload your resume and a JD. We will **Audit** and **Rewrite** it into an **Editable Word Doc**.")
 
+# 1. Inputs
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("1. The Job")
-    # Tabs for Text vs Link
-    jd_tab1, jd_tab2 = st.tabs(["Paste Text", "Paste Link (LinkedIn/Indeed)"])
+    tab_text, tab_link = st.tabs(["Paste Text", "Paste Link"])
     
-    with jd_tab1:
-        jd_text_input = st.text_area("Paste JD Text", height=200)
+    with tab_text:
+        jd_text_input = st.text_area("Paste Job Description", height=200)
     
-    with jd_tab2:
-        jd_url = st.text_input("Paste Job Posting URL")
+    with tab_link:
+        jd_url = st.text_input("Paste LinkedIn/Indeed URL")
+        fetched_jd = None
         if jd_url:
             with st.spinner("Fetching Job Description..."):
                 fetched_jd = fetch_jd_from_url(jd_url)
                 if fetched_jd:
-                    st.success("✅ Job Description Loaded!")
-                    with st.expander("View Fetched Content"):
-                        st.text(fetched_jd[:500]) # Preview
+                    st.success("✅ JD Loaded from Link")
+                    with st.expander("View Fetched Text"):
+                        st.text(fetched_jd[:500] + "...")
                 else:
-                    st.error("Could not fetch URL. Please copy-paste the text instead.")
+                    st.error("Could not fetch link.")
 
 with col2:
     st.subheader("2. Your Resume")
     uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
-if st.button("Optimize Resume"):
-    # 1. Determine which JD to use
-    final_jd = None
-    if jd_text_input:
-        final_jd = jd_text_input
-    elif jd_url and fetched_jd:
-        final_jd = fetched_jd
-        
+# 2. Logic
+if st.button("🚀 Analyze & Rewrite"):
+    # Determine JD Source
+    final_jd = jd_text_input if jd_text_input else fetched_jd
+    
     if not final_jd or not uploaded_file:
-        st.warning("Please provide a Job Description (Text or Link) AND a Resume.")
+        st.warning("Please provide both a JD and a Resume.")
     else:
-        # 2. Read PDF
-        with st.spinner("Reading resume..."):
+        # A. Read PDF
+        with st.spinner("Reading PDF..."):
             reader = PdfReader(uploaded_file)
             original_text = ""
             for page in reader.pages:
                 original_text += page.extract_text() + "\n"
 
-        # 3. Analyze
-        with st.spinner("Analyzing fit..."):
-            original_analysis = get_analysis(original_text, final_jd)
+        # B. Analyze (Original)
+        with st.spinner("Analyzing Fit..."):
+            original_analysis = analyze_fit(original_text, final_jd)
 
-        # 4. Rewrite
-        with st.spinner("Rewriting with XYZ Formula..."):
-            improved_text = generate_improved_content(original_text, final_jd)
+        # C. Rewrite (To JSON)
+        with st.spinner("Rewriting using 'Google XYZ Formula'..."):
+            resume_json = rewrite_resume_to_json(original_text, final_jd, original_analysis)
+            
+            # Generate Docx
+            docx_data = create_docx(resume_json)
 
-        # 5. Re-Analyze
-        with st.spinner("Rescoring..."):
-            new_analysis = get_analysis(improved_text, final_jd)
-
-        # 6. PDF
-        pdf_data = create_pdf(improved_text)
+        # D. Analyze (New Version) - Fairness Check
+        with st.spinner("Verifying New Score..."):
+            # Convert JSON back to text for fair comparison
+            new_text_str = json.dumps(resume_json)
+            new_analysis = analyze_fit(new_text_str, final_jd)
 
         # --- RESULTS ---
         st.divider()
-        st.subheader("📊 Results")
+        st.subheader("📊 Optimization Report")
 
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -179,14 +268,23 @@ if st.button("Optimize Resume"):
             imp = new_analysis['match_percentage'] - original_analysis['match_percentage']
             st.metric("Improvement", f"+{imp}%")
 
-        st.write("### 🔍 Gap Analysis")
+        # Gap Analysis
         col_a, col_b = st.columns(2)
         with col_a:
-            st.info(f"**Missing Keywords:** {', '.join(original_analysis['missing_keywords'])}")
-            st.write(f"**Critique:** {original_analysis['summary']}")
+            st.write("### 🔴 Identified Gaps")
+            st.warning(f"Missing Keywords: {', '.join(original_analysis['missing_keywords'])}")
         with col_b:
-            st.success(f"**Optimization:** {new_analysis['summary']}")
-            
+            st.write("### 🟢 Optimization Strategy")
+            st.success("Applied 'Google XYZ' formula and integrated missing hard skills.")
+
+        # Download
         st.divider()
-        st.subheader("📥 Download")
-        st.download_button("Download Optimized PDF", pdf_data, "Optimized_Resume.pdf", "application/pdf")
+        st.subheader("📥 Download Editable Resume")
+        st.markdown("Your resume has been converted to an **Editable Word Document**.")
+        
+        st.download_button(
+            label="Download .docx File",
+            data=docx_data,
+            file_name="Optimized_Resume.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
